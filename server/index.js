@@ -1,30 +1,43 @@
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
-// Middleware
+// Middleware — allow any Vercel subdomain + localhost
+const allowedOrigins = [
+    /^http:\/\/localhost:\d+$/,
+    /^https:\/\/.*\.vercel\.app$/
+];
+
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: (origin, callback) => {
+        // allow requests with no origin (e.g. curl, mobile apps)
+        if (!origin) return callback(null, true);
+        const allowed = allowedOrigins.some(pattern =>
+            typeof pattern === 'string' ? pattern === origin : pattern.test(origin)
+        );
+        callback(allowed ? null : new Error('Not allowed by CORS'), allowed);
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
 }));
 app.use(express.json());
 
-// MongoDB Connection
-const MONGO_URI = 'mongodb+srv://adharashivkar17_db_user:adidhara%404523@cluster0.p7qbbly.mongodb.net/?appName=Cluster0';
+// MongoDB Connection — reads from env var with hardcoded fallback
+const MONGO_URI = process.env.MONGODB_URI ||
+    'mongodb+srv://adharashivkar17_db_user:adidhara%404523@cluster0.p7qbbly.mongodb.net/?appName=Cluster0';
 
-mongoose.connect(MONGO_URI, {
-    dbName: 'ai_blog'
-})
-    .then(() => console.log('✅ MongoDB Connected Successfully'))
+mongoose.connect(MONGO_URI, { dbName: 'ai_blog' })
+    .then(() => {
+        console.log('✅ MongoDB Connected');
+        initBlogPost();
+    })
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
 // --- Schemas & Models ---
-
-// Blog Post Schema (for likes)
 const blogPostSchema = new mongoose.Schema({
     postId: { type: String, required: true, unique: true },
     likes: { type: Number, default: 0 },
@@ -33,7 +46,6 @@ const blogPostSchema = new mongoose.Schema({
 
 const BlogPost = mongoose.model('BlogPost', blogPostSchema);
 
-// Comment Schema
 const commentSchema = new mongoose.Schema({
     postId: { type: String, required: true },
     author: { type: String, required: true, trim: true },
@@ -57,19 +69,15 @@ const initBlogPost = async () => {
         console.error('Init error:', err);
     }
 };
-initBlogPost();
 
 // --- Routes ---
 
-// GET post stats (likes count)
+// GET post stats
 app.get('/api/post/stats', async (req, res) => {
     try {
         const post = await BlogPost.findOne({ postId: 'main-blog-post' });
         const commentsCount = await Comment.countDocuments({ postId: 'main-blog-post' });
-        res.json({
-            likes: post ? post.likes : 0,
-            comments: commentsCount
-        });
+        res.json({ likes: post ? post.likes : 0, comments: commentsCount });
     } catch (err) {
         res.status(500).json({ error: 'Server error' });
     }
@@ -79,13 +87,11 @@ app.get('/api/post/stats', async (req, res) => {
 app.post('/api/post/like', async (req, res) => {
     try {
         const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-        const { sessionId } = req.body; // Use sessionId from client for unique identification
+        const { sessionId } = req.body;
         const identifier = sessionId || clientIp;
 
         let post = await BlogPost.findOne({ postId: 'main-blog-post' });
-        if (!post) {
-            post = await BlogPost.create({ postId: 'main-blog-post', likes: 0 });
-        }
+        if (!post) post = await BlogPost.create({ postId: 'main-blog-post', likes: 0 });
 
         const hasLiked = post.likedIps.includes(identifier);
         if (hasLiked) {
@@ -96,21 +102,18 @@ app.post('/api/post/like', async (req, res) => {
             post.likedIps.push(identifier);
         }
         await post.save();
-
         res.json({ likes: post.likes, hasLiked: !hasLiked });
     } catch (err) {
-        console.error(err);
         res.status(500).json({ error: 'Server error' });
     }
 });
 
-// GET check if user liked post
+// POST - check user liked status
 app.post('/api/post/check-like', async (req, res) => {
     try {
         const { sessionId } = req.body;
         const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
         const identifier = sessionId || clientIp;
-
         const post = await BlogPost.findOne({ postId: 'main-blog-post' });
         const hasLiked = post ? post.likedIps.includes(identifier) : false;
         res.json({ hasLiked, likes: post ? post.likes : 0 });
@@ -135,15 +138,12 @@ app.get('/api/comments', async (req, res) => {
 app.post('/api/comments', async (req, res) => {
     try {
         const { author, content } = req.body;
-        if (!author || !content) {
+        if (!author || !content)
             return res.status(400).json({ error: 'Author and content are required' });
-        }
-        if (content.length > 1000) {
+        if (content.length > 1000)
             return res.status(400).json({ error: 'Comment too long (max 1000 characters)' });
-        }
 
-        // Generate avatar initials-based color
-        const colors = ['#6366f1', '#8b5cf6', '#ec4899', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
+        const colors = ['#0055a5', '#8b5cf6', '#ec4899', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#3b82f6'];
         const avatarColor = colors[author.charCodeAt(0) % colors.length];
 
         const comment = await Comment.create({
@@ -152,10 +152,8 @@ app.post('/api/comments', async (req, res) => {
             avatar: avatarColor,
             content: content.trim()
         });
-
         res.status(201).json(comment);
     } catch (err) {
-        console.error(err);
         res.status(500).json({ error: 'Server error' });
     }
 });
@@ -166,7 +164,6 @@ app.post('/api/comments/:id/like', async (req, res) => {
         const { sessionId } = req.body;
         const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
         const identifier = sessionId || clientIp;
-
         const comment = await Comment.findById(req.params.id);
         if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
